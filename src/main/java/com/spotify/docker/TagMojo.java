@@ -51,13 +51,7 @@ public class TagMojo extends AbstractDockerMojo {
   @Parameter(property = "image", required = true)
   private String image;
 
-  /**
-   * Flag to skip tagging, making goal a no-op. This can be useful when docker:tag is bound to
-   * the package goal, and you want to mvn package without tagging the image. Defaults to false.
-   */
-  @Parameter(property = "skipDockerTag", defaultValue = "false")
-  private boolean skipDockerTag;
-
+ 
   /**
    * The new name that will be applied to the source image. If a tag is not specified, the docker
    * daemon will automatically apply the tag 'latest' to the specified repo. Only a repo without a
@@ -87,19 +81,16 @@ public class TagMojo extends AbstractDockerMojo {
   @Parameter(property = "useGitCommitId", defaultValue = "false")
   private boolean useGitCommitId;
 
-  public boolean isSkipDockerTag() {
-    return skipDockerTag;
-  }
 
   @Override
   protected void execute(DockerClient docker)
       throws MojoExecutionException, DockerException,
              IOException, InterruptedException, GitAPIException {
 
-    if (skipDockerTag) {
-      getLog().info("Skipping docker tag");
-      return;
-    }
+	  if (weShouldSkipDocker(DockerPhaseType.Tag)) {
+			getLog().info("Skipping docker tag");
+			return;
+		}
 
     final String[] repoTag = parseImageName(newName);
     final String repo = repoTag[0];

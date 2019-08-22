@@ -23,6 +23,28 @@ package com.spotify.docker;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+
+import javax.annotation.Nonnull;
+
+import org.apache.maven.execution.MavenSession;
+import org.apache.maven.plugin.AbstractMojo;
+import org.apache.maven.plugin.MojoExecution;
+import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugins.annotations.Component;
+import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.settings.Server;
+import org.apache.maven.settings.Settings;
+import org.codehaus.plexus.util.xml.Xpp3Dom;
+import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
+import org.sonatype.plexus.components.sec.dispatcher.SecDispatcherException;
+
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableMap;
@@ -40,339 +62,405 @@ import com.spotify.docker.client.exceptions.DockerCertificateException;
 import com.spotify.docker.client.messages.RegistryAuth;
 import com.spotify.docker.client.messages.RegistryConfigs;
 import com.spotify.docker.client.shaded.com.google.common.base.Optional;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
-import javax.annotation.Nonnull;
-import org.apache.maven.execution.MavenSession;
-import org.apache.maven.plugin.AbstractMojo;
-import org.apache.maven.plugin.MojoExecution;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugins.annotations.Component;
-import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.settings.Server;
-import org.apache.maven.settings.Settings;
-import org.codehaus.plexus.util.xml.Xpp3Dom;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcherException;
 
 abstract class AbstractDockerMojo extends AbstractMojo {
 
-  @Component(role = MavenSession.class)
-  protected MavenSession session;
+	@Component(role = MavenSession.class)
+	protected MavenSession session;
 
-  @Component(role = MojoExecution.class)
-  protected MojoExecution execution;
+	@Component(role = MojoExecution.class)
+	protected MojoExecution execution;
 
-  /**
-   * The system settings for Maven. This is the instance resulting from
-   * merging global and user-level settings files.
-   */
-  @Component
-  private Settings settings;
+	/**
+	 * The system settings for Maven. This is the instance resulting from merging
+	 * global and user-level settings files.
+	 */
+	@Component
+	private Settings settings;
 
-  /**
-   * https://issues.apache.org/jira/browse/MNG-4384
-   */
-  @Component(role = SecDispatcher.class, hint = "mng-4384")
-  private SecDispatcher secDispatcher;
+	/**
+	 * https://issues.apache.org/jira/browse/MNG-4384
+	 */
+	@Component(role = SecDispatcher.class, hint = "mng-4384")
+	private SecDispatcher secDispatcher;
 
-  /**
-   * URL of the docker host as specified in pom.xml.
-   */
-  @Parameter(property = "dockerHost")
-  private String dockerHost;
+	/**
+	 * URL of the docker host as specified in pom.xml.
+	 */
+	@Parameter(property = "dockerHost")
+	private String dockerHost;
 
-  @Parameter(property = "dockerCertPath")
-  private String dockerCertPath;
+	@Parameter(property = "dockerCertPath")
+	private String dockerCertPath;
 
-  @Parameter(property = "serverId")
-  private String serverId;
+	@Parameter(property = "serverId")
+	private String serverId;
 
-  @Parameter(property = "registryUrl")
-  private String registryUrl;
+	@Parameter(property = "registryUrl")
+	private String registryUrl;
 
-  /**
-   * Number of retries for failing pushes, defaults to 5.
-   */
-  @Parameter(property = "retryPushCount", defaultValue = "5")
-  private int retryPushCount;
+	/**
+	 * Number of retries for failing pushes, defaults to 5.
+	 */
+	@Parameter(property = "retryPushCount", defaultValue = "5")
+	private int retryPushCount;
 
-  /**
-   * Retry timeout for failing pushes, defaults to 10 seconds.
-   */
-  @Parameter(property = "retryPushTimeout", defaultValue = "10000")
-  private int retryPushTimeout;
+	/**
+	 * Retry timeout for failing pushes, defaults to 10 seconds.
+	 */
+	@Parameter(property = "retryPushTimeout", defaultValue = "10000")
+	private int retryPushTimeout;
 
-  /**
-   * Flag to skip docker goal, making goal a no-op. This can be useful when docker goal
-   * is bound to Maven phase, and you want to skip Docker command. Defaults to false.
-   */
-  @Parameter(property = "skipDocker", defaultValue = "false")
-  private boolean skipDocker;
+	/**
+	 * Flag to skip docker goal, making goal a no-op. This can be useful when docker
+	 * goal is bound to Maven phase, and you want to skip Docker command. Defaults
+	 * to false.
+	 */
+	@Parameter(property = "skipDocker", defaultValue = "false")
+	private boolean skipDocker;
 
-  /**
-   * Flag to skip docker push, making push goal a no-op. This can be useful when docker:push
-   * is bound to deploy goal, and you want to deploy a jar but not a container. Defaults to false.
-   */
-  @Parameter(property = "skipDockerPush", defaultValue = "false")
-  private boolean skipDockerPush;
+	/**
+	 * Flag to skip docker push, making push goal a no-op. This can be useful when
+	 * docker:push is bound to deploy goal, and you want to deploy a jar but not a
+	 * container. Defaults to false.
+	 */
+	@Parameter(property = "skipDockerPush", defaultValue = "false")
+	private boolean skipDockerPush;
 
-  public int getRetryPushTimeout() {
-    return retryPushTimeout;
-  }
+	/**
+	 * Directory containing the Dockerfile. If the value is not set, the plugin will
+	 * generate a Dockerfile using the required baseImage value, plus the optional
+	 * entryPoint, cmd and maintainer values. If this value is set the plugin will
+	 * use the Dockerfile in the specified folder.
+	 */
+	@Parameter(property = "dockerDirectory")
+	private String dockerDirectory;
 
-  public int getRetryPushCount() {
-    return retryPushCount;
-  };
+	/**
+	 * Flag to skip docker build, making build goal a no-op. This can be useful when
+	 * docker:build is bound to package goal, and you want to build a jar but not a
+	 * container. Defaults to false.
+	 */
+	@Parameter(property = "skipDockerBuild", defaultValue = "false")
+	private boolean skipDockerBuild;
 
-  public boolean isSkipDocker() {
-    return skipDocker;
-  }
+	/**
+	 * Flag to skip tagging, making goal a no-op. This can be useful when docker:tag
+	 * is bound to the package goal, and you want to mvn package without tagging the
+	 * image. Defaults to false.
+	 */
+	@Parameter(property = "skipDockerTag", defaultValue = "false")
+	private boolean skipDockerTag;
 
-  public boolean isSkipDockerPush() {
-    return skipDockerPush;
-  }
+	public String getDockerDirectory() {
+		return dockerDirectory;
+	}
 
-  @Override
-  public void execute() throws MojoExecutionException {
+	public void setDockerDirectory(String dockerDirectory) {
+		this.dockerDirectory = dockerDirectory;
+	}
 
-    if (skipDocker) {
-      getLog().info("Skipping docker goal");
-      return;
-    }
+	public void setSkipDockerBuild(boolean skipDockerBuild) {
+		this.skipDockerBuild = skipDockerBuild;
+	}
 
-    try (DockerClient client = buildDockerClient()) {
-      execute(client);
-    } catch (Exception e) {
-      throw new MojoExecutionException("Exception caught", e);
-    }
-  }
+	public boolean isSkipDockerBuild() {
+		return skipDockerBuild;
+	}
 
-  protected DefaultDockerClient.Builder getBuilder() throws DockerCertificateException {
-    return DefaultDockerClient.fromEnv()
-      .readTimeoutMillis(0);
-  }
+	public boolean isSkipDockerTag() {
+		return skipDockerTag;
+	}
 
-  protected DockerClient buildDockerClient() throws MojoExecutionException {
+	public int getRetryPushTimeout() {
+		return retryPushTimeout;
+	}
 
-    final DefaultDockerClient.Builder builder;
-    try {
-      builder = getBuilder();
+	public int getRetryPushCount() {
+		return retryPushCount;
+	};
 
-      final String dockerHost = rawDockerHost();
-      if (!isNullOrEmpty(dockerHost)) {
-        builder.uri(dockerHost);
-      }
-      final Optional<DockerCertificatesStore> certs = dockerCertificates();
-      if (certs.isPresent()) {
-        builder.dockerCertificates(certs.get());
-      }
-    } catch (DockerCertificateException ex) {
-      throw new MojoExecutionException("Cannot build DockerClient due to certificate problem", ex);
-    }
+	public boolean isSkipDocker() {
+		return skipDocker;
+	}
 
-    builder.registryAuthSupplier(authSupplier());
+	public boolean isSkipDockerPush() {
+		return skipDockerPush;
+	}
 
-    return builder.build();
-  }
+	@Override
+	public void execute() throws MojoExecutionException {
 
-  protected abstract void execute(final DockerClient dockerClient) throws Exception;
+		if (skipDocker) {
+			getLog().info("Skipping docker goal");
+			return;
+		}
 
-  protected String rawDockerHost() {
-    return dockerHost;
-  }
+		try (DockerClient client = buildDockerClient()) {
+			execute(client);
+		} catch (Exception e) {
+			throw new MojoExecutionException("Exception caught", e);
+		}
+	}
 
-  protected Optional<DockerCertificatesStore> dockerCertificates()
-      throws DockerCertificateException {
-    if (!isNullOrEmpty(dockerCertPath)) {
-      return DockerCertificates.builder()
-        .dockerCertPath(Paths.get(dockerCertPath)).build();
-    } else {
-      return Optional.absent();
-    }
-  }
+	protected DefaultDockerClient.Builder getBuilder() throws DockerCertificateException {
+		return DefaultDockerClient.fromEnv().readTimeoutMillis(0);
+	}
 
-  /**
-   * Get the email from the server configuration in <code>~/.m2/settings.xml</code>.
-   *
-   * <pre>{@code
-   * <servers>
-   *   <server>
-   *     <id>my-private-docker-registry</id>
-   *     [...]
-   *     <configuration>
-   *       <email>foo@bar.com</email>
-   *     </configuration>
-   *   </server>
-   * </servers>
-   * }</pre>
-   *
-   * The above <code>settings.xml</code> would return "foo@bar.com".
-   * @param server {@link Server}
-   * @return email, or {@code null} if not set
-   */
-  private String getEmail(final Server server) {
-    String email = null;
+	protected DockerClient buildDockerClient() throws MojoExecutionException {
 
-    final Xpp3Dom configuration = (Xpp3Dom) server.getConfiguration();
+		final DefaultDockerClient.Builder builder;
+		try {
+			builder = getBuilder();
 
-    if (configuration != null) {
-      final Xpp3Dom emailNode = configuration.getChild("email");
+			final String dockerHost = rawDockerHost();
+			if (!isNullOrEmpty(dockerHost)) {
+				builder.uri(dockerHost);
+			}
+			final Optional<DockerCertificatesStore> certs = dockerCertificates();
+			if (certs.isPresent()) {
+				builder.dockerCertificates(certs.get());
+			}
+		} catch (DockerCertificateException ex) {
+			throw new MojoExecutionException("Cannot build DockerClient due to certificate problem", ex);
+		}
 
-      if (emailNode != null) {
-        email = emailNode.getValue();
-      }
-    }
+		builder.registryAuthSupplier(authSupplier());
 
-    return email;
-  }
+		return builder.build();
+	}
 
-  /**
-   * Builds the registryAuth object from server details.
-   * @return {@link RegistryAuth}
-   * @throws MojoExecutionException
-   */
-  protected RegistryAuth registryAuth() throws MojoExecutionException {
-    if (settings != null && serverId != null) {
-      final Server server = settings.getServer(serverId);
-      if (server != null) {
-        final RegistryAuth.Builder registryAuthBuilder = RegistryAuth.builder();
+	protected abstract void execute(final DockerClient dockerClient) throws Exception;
 
-        final String username = server.getUsername();
-        String password = server.getPassword();
-        if (secDispatcher != null) {
-          try {
-            password = secDispatcher.decrypt(password);
-          } catch (SecDispatcherException ex) {
-            throw new MojoExecutionException("Cannot decrypt password from settings", ex);
-          }
-        }
-        final String email = getEmail(server);
+	protected String rawDockerHost() {
+		return dockerHost;
+	}
 
-        if (!isNullOrEmpty(username)) {
-          registryAuthBuilder.username(username);
-        }
-        if (!isNullOrEmpty(email)) {
-          registryAuthBuilder.email(email);
-        }
-        if (!isNullOrEmpty(password)) {
-          registryAuthBuilder.password(password);
-        }
-        if (!isNullOrEmpty(registryUrl)) {
-          registryAuthBuilder.serverAddress(registryUrl);
-        }
+	protected Optional<DockerCertificatesStore> dockerCertificates() throws DockerCertificateException {
+		if (!isNullOrEmpty(dockerCertPath)) {
+			return DockerCertificates.builder().dockerCertPath(Paths.get(dockerCertPath)).build();
+		} else {
+			return Optional.absent();
+		}
+	}
 
-        return registryAuthBuilder.build();
-      } else {
-        // settings.xml has no entry for the configured serverId, warn the user
-        getLog().warn("No entry found in settings.xml for serverId=" + serverId
-                      + ", cannot configure authentication for that registry");
-      }
-    }
-    return null;
-  }
+	/**
+	 * Get the email from the server configuration in
+	 * <code>~/.m2/settings.xml</code>.
+	 *
+	 * <pre>
+	 * {@code
+	 * <servers>
+	 *   <server>
+	 *     <id>my-private-docker-registry</id>
+	 *     [...]
+	 *     <configuration>
+	 *       <email>foo@bar.com</email>
+	 *     </configuration>
+	 *   </server>
+	 * </servers>
+	 * }
+	 * </pre>
+	 *
+	 * The above <code>settings.xml</code> would return "foo@bar.com".
+	 * 
+	 * @param server
+	 *            {@link Server}
+	 * @return email, or {@code null} if not set
+	 */
+	private String getEmail(final Server server) {
+		String email = null;
 
-  private RegistryAuthSupplier authSupplier() throws MojoExecutionException {
+		final Xpp3Dom configuration = (Xpp3Dom) server.getConfiguration();
 
-    final List<RegistryAuthSupplier> suppliers = new ArrayList<>();
+		if (configuration != null) {
+			final Xpp3Dom emailNode = configuration.getChild("email");
 
-    // prioritize the docker config file
-    suppliers.add(new ConfigFileRegistryAuthSupplier());
+			if (emailNode != null) {
+				email = emailNode.getValue();
+			}
+		}
 
-    // then Google Container Registry support
-    final RegistryAuthSupplier googleRegistrySupplier = googleContainerRegistryAuthSupplier();
-    if (googleRegistrySupplier != null) {
-      suppliers.add(googleRegistrySupplier);
-    }
+		return email;
+	}
 
-    // lastly, use any explicitly configured RegistryAuth as a catch-all
-    final RegistryAuth registryAuth = registryAuth();
-    if (registryAuth != null) {
-      final RegistryConfigs configsForBuild = RegistryConfigs.create(ImmutableMap.of(
-          serverIdFor(registryAuth), registryAuth
-      ));
-      suppliers.add(new FixedRegistryAuthSupplier(registryAuth, configsForBuild));
-    }
+	/**
+	 * Builds the registryAuth object from server details.
+	 * 
+	 * @return {@link RegistryAuth}
+	 * @throws MojoExecutionException
+	 */
+	protected RegistryAuth registryAuth() throws MojoExecutionException {
+		if (settings != null && serverId != null) {
+			final Server server = settings.getServer(serverId);
+			if (server != null) {
+				final RegistryAuth.Builder registryAuthBuilder = RegistryAuth.builder();
 
-    getLog().info("Using authentication suppliers: " +
-                  Lists.transform(suppliers, new SupplierToClassNameFunction()));
+				final String username = server.getUsername();
+				String password = server.getPassword();
+				if (secDispatcher != null) {
+					try {
+						password = secDispatcher.decrypt(password);
+					} catch (SecDispatcherException ex) {
+						throw new MojoExecutionException("Cannot decrypt password from settings", ex);
+					}
+				}
+				final String email = getEmail(server);
 
-    return new MultiRegistryAuthSupplier(suppliers);
-  }
+				if (!isNullOrEmpty(username)) {
+					registryAuthBuilder.username(username);
+				}
+				if (!isNullOrEmpty(email)) {
+					registryAuthBuilder.email(email);
+				}
+				if (!isNullOrEmpty(password)) {
+					registryAuthBuilder.password(password);
+				}
+				if (!isNullOrEmpty(registryUrl)) {
+					registryAuthBuilder.serverAddress(registryUrl);
+				}
 
-  private String serverIdFor(RegistryAuth registryAuth) {
-    if (serverId != null) {
-      return serverId;
-    }
-    if (registryAuth.serverAddress() != null) {
-      return registryAuth.serverAddress();
-    }
-    return "index.docker.io";
-  }
+				return registryAuthBuilder.build();
+			} else {
+				// settings.xml has no entry for the configured serverId, warn the user
+				getLog().warn("No entry found in settings.xml for serverId=" + serverId
+						+ ", cannot configure authentication for that registry");
+			}
+		}
+		return null;
+	}
 
-  /**
-   * Attempt to load a GCR compatible RegistryAuthSupplier based on a few conditions:
-   * <ol>
-   * <li>First check to see if the environemnt variable DOCKER_GOOGLE_CREDENTIALS is set and points
-   * to a readable file</li>
-   * <li>Otherwise check if the Google Application Default Credentials can be loaded</li>
-   * </ol>
-   * Note that we use a special environment variable of our own in addition to any environment
-   * variable that the ADC loading uses (GOOGLE_APPLICATION_CREDENTIALS) in case there is a need for
-   * the user to use the latter env var for some other purpose in their build.
-   *
-   * @return a GCR RegistryAuthSupplier, or null
-   * @throws MojoExecutionException if an IOException occurs while loading the explicitly-requested
-   *                                credentials
-   */
-  private RegistryAuthSupplier googleContainerRegistryAuthSupplier() throws MojoExecutionException {
-    GoogleCredentials credentials = null;
+	private RegistryAuthSupplier authSupplier() throws MojoExecutionException {
 
-    final String googleCredentialsPath = System.getenv("DOCKER_GOOGLE_CREDENTIALS");
-    if (googleCredentialsPath != null) {
-      final File file = new File(googleCredentialsPath);
-      if (file.exists()) {
-        try {
-          try (FileInputStream inputStream = new FileInputStream(file)) {
-            credentials = GoogleCredentials.fromStream(inputStream);
-            getLog().info("Using Google credentials from file: " + file.getAbsolutePath());
-          }
-        } catch (IOException ex) {
-          throw new MojoExecutionException("Cannot load credentials referenced by "
-                                           + "DOCKER_GOOGLE_CREDENTIALS environment variable", ex);
-        }
-      }
-    }
+		final List<RegistryAuthSupplier> suppliers = new ArrayList<>();
 
-    // use the ADC last
-    if (credentials == null) {
-      try {
-        credentials = GoogleCredentials.getApplicationDefault();
-        getLog().info("Using Google application default credentials");
-      } catch (IOException ex) {
-        // No GCP default credentials available
-        getLog().debug("Failed to load Google application default credentials", ex);
-      }
-    }
+		// prioritize the docker config file
+		suppliers.add(new ConfigFileRegistryAuthSupplier());
 
-    if (credentials == null) {
-      return null;
-    }
+		// then Google Container Registry support
+		final RegistryAuthSupplier googleRegistrySupplier = googleContainerRegistryAuthSupplier();
+		if (googleRegistrySupplier != null) {
+			suppliers.add(googleRegistrySupplier);
+		}
 
-    return ContainerRegistryAuthSupplier.forCredentials(credentials).build();
-  }
+		// lastly, use any explicitly configured RegistryAuth as a catch-all
+		final RegistryAuth registryAuth = registryAuth();
+		if (registryAuth != null) {
+			final RegistryConfigs configsForBuild = RegistryConfigs
+					.create(ImmutableMap.of(serverIdFor(registryAuth), registryAuth));
+			suppliers.add(new FixedRegistryAuthSupplier(registryAuth, configsForBuild));
+		}
 
-  private static class SupplierToClassNameFunction
-      implements Function<RegistryAuthSupplier, String> {
+		getLog().info(
+				"Using authentication suppliers: " + Lists.transform(suppliers, new SupplierToClassNameFunction()));
 
-    @Override
-    @Nonnull
-    public String apply(@Nonnull final RegistryAuthSupplier input) {
-      return input.getClass().getSimpleName();
-    }
-  }
+		return new MultiRegistryAuthSupplier(suppliers);
+	}
+
+	private String serverIdFor(RegistryAuth registryAuth) {
+		if (serverId != null) {
+			return serverId;
+		}
+		if (registryAuth.serverAddress() != null) {
+			return registryAuth.serverAddress();
+		}
+		return "index.docker.io";
+	}
+
+	/**
+	 * Attempt to load a GCR compatible RegistryAuthSupplier based on a few
+	 * conditions:
+	 * <ol>
+	 * <li>First check to see if the environemnt variable DOCKER_GOOGLE_CREDENTIALS
+	 * is set and points to a readable file</li>
+	 * <li>Otherwise check if the Google Application Default Credentials can be
+	 * loaded</li>
+	 * </ol>
+	 * Note that we use a special environment variable of our own in addition to any
+	 * environment variable that the ADC loading uses
+	 * (GOOGLE_APPLICATION_CREDENTIALS) in case there is a need for the user to use
+	 * the latter env var for some other purpose in their build.
+	 *
+	 * @return a GCR RegistryAuthSupplier, or null
+	 * @throws MojoExecutionException
+	 *             if an IOException occurs while loading the explicitly-requested
+	 *             credentials
+	 */
+	private RegistryAuthSupplier googleContainerRegistryAuthSupplier() throws MojoExecutionException {
+		GoogleCredentials credentials = null;
+
+		final String googleCredentialsPath = System.getenv("DOCKER_GOOGLE_CREDENTIALS");
+		if (googleCredentialsPath != null) {
+			final File file = new File(googleCredentialsPath);
+			if (file.exists()) {
+				try {
+					try (FileInputStream inputStream = new FileInputStream(file)) {
+						credentials = GoogleCredentials.fromStream(inputStream);
+						getLog().info("Using Google credentials from file: " + file.getAbsolutePath());
+					}
+				} catch (IOException ex) {
+					throw new MojoExecutionException(
+							"Cannot load credentials referenced by " + "DOCKER_GOOGLE_CREDENTIALS environment variable",
+							ex);
+				}
+			}
+		}
+
+		// use the ADC last
+		if (credentials == null) {
+			try {
+				credentials = GoogleCredentials.getApplicationDefault();
+				getLog().info("Using Google application default credentials");
+			} catch (IOException ex) {
+				// No GCP default credentials available
+				getLog().debug("Failed to load Google application default credentials", ex);
+			}
+		}
+
+		if (credentials == null) {
+			return null;
+		}
+
+		return ContainerRegistryAuthSupplier.forCredentials(credentials).build();
+	}
+
+	private static class SupplierToClassNameFunction implements Function<RegistryAuthSupplier, String> {
+
+		@Override
+		@Nonnull
+		public String apply(@Nonnull final RegistryAuthSupplier input) {
+			return input.getClass().getSimpleName();
+		}
+	}
+
+	protected boolean weShouldSkipDocker(DockerPhaseType type) {
+		if (skipDockerBuild && type.equals(DockerPhaseType.Build)) {
+			getLog().info("Property skipDockerBuild is set");
+			return true;
+		}
+		if (skipDockerPush && type.equals(DockerPhaseType.Push)) {
+			getLog().info("Property skipDockerPush is set");
+			return true;
+		}
+		if (skipDockerTag && type.equals(DockerPhaseType.Tag)) {
+			getLog().info("Property skipDockerTag is set");
+			return true;
+		}
+
+		final String packaging = session.getCurrentProject().getPackaging();
+		if ("pom".equalsIgnoreCase(packaging)) {
+			getLog().info("Project packaging is " + packaging);
+			return true;
+		}
+
+		if (dockerDirectory != null) {
+			final Path path = Paths.get(dockerDirectory, "Dockerfile");
+			if (!path.toFile().exists()) {
+				getLog().info("No Dockerfile in dockerDirectory");
+				return true;
+			}
+		}
+
+		return false;
+	}
 }

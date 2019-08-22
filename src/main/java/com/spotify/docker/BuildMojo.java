@@ -106,21 +106,7 @@ public class BuildMojo extends AbstractDockerMojo {
    */
   private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
   
-  /**
-   * Directory containing the Dockerfile. If the value is not set, the plugin will generate a
-   * Dockerfile using the required baseImage value, plus the optional entryPoint, cmd and maintainer
-   * values. If this value is set the plugin will use the Dockerfile in the specified folder.
-   */
-  @Parameter(property = "dockerDirectory")
-  private String dockerDirectory;
-
-  /**
-   * Flag to skip docker build, making build goal a no-op. This can be useful when docker:build
-   * is bound to package goal, and you want to build a jar but not a container. Defaults to false.
-   */
-  @Parameter(property = "skipDockerBuild", defaultValue = "false")
-  private boolean skipDockerBuild;
-
+ 
   /**
    * Flag to attempt to pull base images even if older images exists locally. Sends the equivalent
    * of `--pull=true` to Docker daemon when building the image.
@@ -290,32 +276,7 @@ public class BuildMojo extends AbstractDockerMojo {
     return forceTags;
   }
   
-  private boolean weShouldSkipDockerBuild() {
-    if (skipDockerBuild) {
-      getLog().info("Property skipDockerBuild is set");
-      return true;
-    }
-
-    final String packaging = session.getCurrentProject().getPackaging();
-    if ("pom".equalsIgnoreCase(packaging)) {
-      getLog().info("Project packaging is " + packaging);
-      return true;
-    }
-
-    if (dockerDirectory != null) {
-      final Path path = Paths.get(dockerDirectory, "Dockerfile");
-      if (!path.toFile().exists()) {
-        getLog().info("No Dockerfile in dockerDirectory");
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  public boolean isSkipDockerBuild() {
-    return skipDockerBuild;
-  }
+  
 
   @Override
   public void execute() throws MojoExecutionException {
@@ -332,7 +293,7 @@ public class BuildMojo extends AbstractDockerMojo {
       throws MojoExecutionException, GitAPIException, IOException, DockerException,
              InterruptedException {
 
-    if (weShouldSkipDockerBuild()) {
+    if (weShouldSkipDocker(DockerPhaseType.Build)) {
       getLog().info("Skipping docker build");
       return;
     }
@@ -390,12 +351,12 @@ public class BuildMojo extends AbstractDockerMojo {
     mavenProject.getProperties().put("imageName", imageName);
 
     final String destination = getDestination();
-    if (dockerDirectory == null) {
+    if (getDockerDirectory() == null) {
       final List<String> copiedPaths = copyResources(destination);
       createDockerFile(destination, copiedPaths);
     } else {
       final Resource resource = new Resource();
-      resource.setDirectory(dockerDirectory);
+      resource.setDirectory(getDockerDirectory());
       resources.add(resource);
       copyResources(destination);
     }
@@ -587,7 +548,7 @@ public class BuildMojo extends AbstractDockerMojo {
   }
 
   private void validateParameters() throws MojoExecutionException {
-    if (dockerDirectory == null) {
+    if (getDockerDirectory() == null) {
       if (baseImage == null) {
         throw new MojoExecutionException("Must specify baseImage if dockerDirectory is null");
       }

@@ -21,17 +21,17 @@
 
 package com.spotify.docker;
 
-import com.spotify.docker.client.DockerClient;
-import com.spotify.docker.client.exceptions.DockerException;
+import static com.spotify.docker.Utils.pushImage;
 
+import java.io.IOException;
 import java.util.List;
+
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 
-import java.io.IOException;
-
-import static com.spotify.docker.Utils.pushImage;
+import com.spotify.docker.client.DockerClient;
+import com.spotify.docker.client.exceptions.DockerException;
 
 /**
  * Pushes a docker image repository to the specified docker registry.
@@ -39,21 +39,26 @@ import static com.spotify.docker.Utils.pushImage;
 @Mojo(name = "push")
 public class PushMojo extends AbstractDockerMojo {
 
-  /** Name of image to push. */
-  @Parameter(property = "imageName", required = true)
-  private String imageName;
+	/** Name of image to push. */
+	@Parameter(property = "imageName", required = true)
+	private String imageName;
 
-  /** Additional tags to tag the image with. */
-  @SuppressWarnings("MismatchedQueryAndUpdateOfCollection")
-  @Parameter(property = "dockerImageTags")
-  private List<String> imageTags;
+	/** Additional tags to tag the image with. */
+	@SuppressWarnings("MismatchedQueryAndUpdateOfCollection")
+	@Parameter(property = "dockerImageTags")
+	private List<String> imageTags;
 
-  @Override
-  protected void execute(DockerClient docker)
-      throws MojoExecutionException, DockerException, IOException, InterruptedException {
+	@Override
+	protected void execute(DockerClient docker)
+			throws MojoExecutionException, DockerException, IOException, InterruptedException {
 
-    pushImage(docker, imageName, imageTags, getLog(), null, getRetryPushCount(),
-        getRetryPushTimeout(), isSkipDockerPush());
-  }
+		if (weShouldSkipDocker(DockerPhaseType.Push)) {
+			getLog().info("Skipping docker push");
+			return;
+		}
+
+		pushImage(docker, imageName, imageTags, getLog(), null, getRetryPushCount(), getRetryPushTimeout(),
+				isSkipDockerPush());
+	}
 
 }
